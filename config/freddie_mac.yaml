@@ -1,0 +1,146 @@
+# Pré-enregistrement : paramètres fixés AVANT de regarder les résultats par classe de risque.
+# Toute modification ultérieure doit être datée et justifiée (nouvelle version), jamais écrasée.
+
+fige_le: 2026-11-18   # aucun résultat par classe de risque n'avait été regardé à cette date
+
+donnees:
+  source: Freddie Mac Single-Family Loan-Level Dataset (échantillons standard, 50 000 prêts par millésime)
+  millesimes_etudies: [2007, 2015]
+  version_du_jeu: a_renseigner   # release (guide : Release 48, oct. 2026) et date de téléchargement
+
+regle_defaut:
+  version: v2   # v1 + marquage forbearance/sinistre ; v1 reste documentée dans docs/regle_defaut.md
+  statut_impayes_minimum: 3        # >= 03 : 90 jours d'impayés ou plus ; 99 = plafond, pas "non disponible"
+  statut_ra_est_defaut: true       # RA = bien saisi (REO), improbabilité de paiement
+  zero_balance_codes_defaut: ["02", "03", "09", "15"]
+  zero_balance_codes_exclus: ["01", "16", "96"]  # 16 et 96 comptent seulement si le statut a déjà déclenché
+  statut_inconnu: ["XX", ""]       # traité comme manquant, jamais comme défaut
+  defaut_definitif: true           # un prêt redressé reste en défaut, daté du premier mois
+  forbearance:
+    traitement: marquer_sans_exclure   # option b : défauts conservés, colonne defaut_forbearance
+    plan_assistance: ["F"]             # Borrower Assistance Plan = F
+    sinistre: ["Y"]                    # Delinquency Due to Disaster = Y
+    taux_a_publier: [avec, sans]
+
+seuil_minimal_defauts:
+  valeur: 30
+  version: souple
+  # Le seuil s'applique à la cellule sur laquelle un test est réellement fait :
+  #  - test principal : par classe de risque et par millésime, sur toute la période d'observation ;
+  #  - détail par année d'observation : calculé seulement si la cellule atteint 30 défauts.
+  # Sous le seuil : cellule marquée "trop peu de défauts pour conclure", intervalle exact
+  # affiché à la place d'un test.
+  justification: >
+    Au-dessus de 30 défauts l'incertitude d'échantillonnage du taux est d'environ 18 %
+    (1/racine(30)) ; à 100, environ 10 %. Un seuil plus élevé écarterait les classes très sûres
+    qui servent à illustrer un portefeuille à faible taux de défaut. Choix du projet, pas un
+    seuil réglementaire.
+
+# Complété le 2026-11-20. Les valeurs ci-dessous sont celles utilisées par le code et les notebooks 03 à 07.
+# Ce fichier n'est pas encore lu par le code : tests/test_config.py vérifie qu'il reste cohérent avec les constantes du code.
+# Voir `historique_des_decisions` en bas : certaines décisions ont été prises APRÈS avoir vu des résultats, et c'est écrit.
+
+regimes:
+  definition: calendrier, identique pour tous les millésimes   # un régime est un fait de calendrier, pas de millésime
+  frontieres:
+    - {nom: crise_2008, annee_debut: 2008, annee_fin: 2010}
+    - {nom: stress_2020, annee_debut: 2020, annee_fin: 2020}
+  regime_par_defaut: normal
+  verification: a_confirmer_avec_series_agregees_FRED   # pas faite ; à ne jamais confirmer avec les résultats du modèle
+  limite: >
+    La crise 2008-2010 précède la première année de test des deux millésimes (2011 et 2019) :
+    elle n'est jamais observée hors échantillon. 2020 est le seul stress présent dans les années de test.
+
+decoupe_temporelle:
+  methode: walk_forward_fenetre_croissante   # jamais de validation croisée aléatoire
+  apprentissage: toutes les années strictement antérieures à l'année de test
+  un_millesime_a_la_fois: true
+  millesimes:
+    2007: {premiere_annee_test: 2011, derniere_annee_test: 2026, annees_test: 16}
+    2015: {premiere_annee_test: 2019, derniere_annee_test: 2026, annees_test: 8}   # réplication
+  annee_sans_les_deux_classes: ignoree   # si l'apprentissage ne contient qu'une classe
+
+panel:
+  unite: prêt-année   # une ligne par prêt et par année calendaire après l'octroi, jusqu'au défaut ou à la fin de l'observation
+  cible_principale: defaut_hors_forbearance
+  cible_sensibilite: defaut
+  variables_numeriques: [age_mois, fico, cltv, ltv, dti, mi_pct, taux, upb, duree, unites, emprunteurs]
+  variables_categorielles: [objet, occupation, type_bien, primo_accedant, canal]
+  codes_non_disponibles: {fico: 9999, cltv: 999, ltv: 999, dti: 999, mi_pct: 999, unites: 99, emprunteurs: 99}   # traités comme manquants
+
+modeles:
+  reference:
+    type: regression_logistique
+    imputation: mediane_avec_indicateur
+    variables_numeriques: centrees_reduites
+    variables_categorielles: indicatrices
+    max_iter: 2000
+  challenger:
+    type: gradient_boosting_histogrammes
+    max_iter: 200
+    learning_rate: 0.05
+    max_leaf_nodes: 15
+    min_samples_leaf: 200
+    early_stopping: false
+    random_state: 0
+  limite: "les modèles sont construits et validés par la même personne : ce n'est pas une validation indépendante"
+
+classes_de_risque:
+  construction: déciles de la PD prédite, recalculés chaque année de test (effectifs égaux à une unité près)
+  nombre: 10
+
+tests_statistiques:
+  convention_residu: observe_moins_predit   # positif = le modèle sous-estime le risque
+  biais_robuste:
+    methode: newey_west_noyau_de_bartlett
+    retards_par_defaut: "floor(4 * (n / 100) ** (2 / 9))"
+    sensibilite_retards: [0, 1, 2, 3, 4]
+  comparaison_appariee:
+    methode: diebold_mariano
+    perte: erreur_quadratique_de_calibration_par_annee_ponderee_par_n
+    correction_petit_echantillon: harvey_h1
+  calibration:
+    tests: [binomial_exact, vasicek]
+    sens: [sous, sur]                     # sous : le modèle sous-estime ; sur : il surestime
+    rho_vasicek: [0.05, 0.15, 0.24]       # hypothèse de corrélation d'actifs ; 0,15 et 0,24 à confirmer dans le texte réglementaire
+    niveau: 0.05
+  discrimination: {mesures: [gini, ks], annee_fiable_si_defauts_au_moins: 30}
+  stabilite:
+    mesure: psi
+    population: a_l_octroi_entre_millesimes   # 2007 = référence ; pas d'une année de test à l'autre (survivants)
+    classes: 10
+    reperes_usuels: {stable: 0.10, derive: 0.25}   # conventions de métier, pas des seuils statistiques
+  intervalle_exact: clopper_pearson
+  niveau_intervalle: 0.95
+
+lgd:
+  definition: a   # perte en cas de liquidation, voir docs/lgd.md ; la définition b (workout) n'est pas faite
+  formule: "Actual Loss / Current Actual UPB au mois du défaut"
+  cohorte: annee_du_defaut
+  population: défauts sortis par 02/03/09/15, perte renseignée, sans règlement de défaut de souscription
+  agregation: Σ pertes / Σ UPB au défaut
+  contraste: {intervalle: bootstrap_sur_les_prets, nb_tirages: 2000, graine: 0}
+  limite: "non actualisée ; ignore les défauts redevenus sains ; coûts de modification exclus"
+
+segment_faible_defaut:        # ajouté le 2026-11-20, avant tout calcul de défauts sur le segment
+  millesime: 2015
+  critere_a_l_octroi: "fico >= 760 et cltv <= 70 et dti <= 36"
+  effectif_prets: 5231        # 10,6 % du millésime ; seuls des effectifs de prêts ont été regardés
+  alternatives_comptees: ["fico>=780 & cltv<=60 & dti<=36 : 2537 prêts", "fico>=740 & cltv<=80 & dti<=40 : 16126 prêts"]
+  justification: "profil emprunteur très sûr (score élevé, apport important, endettement modéré) ; seuils choisis par jugement, pas par un texte réglementaire"
+  appellation: "segment à faible taux de défaut (et non « portefeuille à faibles défauts »)"
+
+historique_des_decisions:     # honnêteté : quand chaque choix a été fait par rapport aux résultats
+  - {date: 2026-11-18, decision: "règle de défaut v1, seuil de 30 défauts (version souple)", avant_resultats: true}
+  - {date: 2026-11-19, decision: "walk-forward à fenêtre croissante, découpes 2011 et 2019, 10 classes, logistique contre boosting, crise 2008-2010", avant_resultats: true,
+     note: "d'après les notes du projet ; la 1re année de test du millésime 2015 (2019) a été proposée par l'assistant"}
+  - {date: 2026-11-19, decision: "règle de défaut v2 (marquage de la forbearance)", avant_resultats: false,
+     note: "motivée par les comptages 2020 vus à l'étape 0 : 94,4 % et 87,1 % des défauts de 2020 portent un marqueur"}
+  - {date: 2026-11-19, decision: "run principal entraîné hors forbearance, run de sensibilité avec", avant_resultats: false,
+     note: "choisi après avoir mesuré la contamination de 2021 (PD 4,96 % contre 0,28 % pour la logistique, millésime 2015)"}
+  - {date: 2026-11-20, decision: "régime stress_2020 ajouté, régimes identiques pour les deux millésimes", avant_resultats: false,
+     note: "ajouté après avoir vu l'effet de la forbearance en 2020 ; correction d'un oubli de 2020 pour le millésime 2007"}
+  - {date: 2026-11-20, decision: "segment à faible taux de défaut (fico >= 760, cltv <= 70, dti <= 36)", avant_resultats: true,
+     note: "seuls des effectifs de prêts avaient été regardés"}
+  - {date: 2026-11-20, decision: "LGD en définition a seulement", avant_resultats: true,
+     note: "choix de faisabilité ; la définition b est décrite et écartée dans docs/lgd.md"}

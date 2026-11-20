@@ -1,0 +1,15 @@
+# Données Freddie Mac : licence interdisant la redistribution, et fichiers trop lourds pour GitHub (limite 100 Mo).
+# Ne jamais retirer cette ligne.
+data/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Jupyter et système
+.ipynb_checkpoints/
+.DS_Store
